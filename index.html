@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>MediaPipe USB Multi-LED Control</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background-color: #f0f0f0; margin: 0; padding: 20px; }
+        .controls { margin-bottom: 20px; padding: 15px; background: white; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        button { padding: 12px 24px; font-size: 16px; cursor: pointer; border-radius: 5px; border: none; background: #28a745; color: white; font-weight: bold; }
+        button:disabled { background: #ccc; }
+        #status { margin-top: 10px; text-align: center; color: #666; }
+        canvas { border-radius: 8px; background: #000; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <button id="connectButton">USB接続を開始する</button>
+        <div id="status">ステータス: USB未接続 (Chrome/Edge推奨)</div>
+    </div>
+
+    <div style="position: relative;">
+        <video id="input_video" style="display:none;"></video>
+        <canvas id="output_canvas" width="640px" height="480px"></canvas>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusDiv = document.getElementById('status');
+        const connectButton = document.getElementById('connectButton');
+
+        let port, writer;
+
+        // --- USB通信設定 ---
+        connectButton.addEventListener('click', async () => {
+            try {
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 115200 });
+                const encoder = new TextEncoderStream();
+                encoder.readable.pipeTo(port.writable);
+                writer = encoder.writable.getWriter();
+                
+                statusDiv.innerText = "ステータス: 接続完了！カメラを起動します...";
+                connectButton.disabled = true;
+                startCamera();
+            } catch (e) {
+                statusDiv.innerText = "エラー: 接続に失敗しました";
+            }
+        });
+
+        async function sendSignal(target, action) {
+            if (writer) {
+                await writer.write(`${target}/${action}\n`);
+            }
+        }
+
+        // --- MediaPipe 設定 ---
+        const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+        pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        pose.onResults(onResults);
+
+        // 前回の状態を保存（連打防止）
+        let lastLeft = "";
+        let lastRight = "";
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            
+            if (results.poseLandmarks) {
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2});
+
+                // --- 判定ロジック ---
+                // MediaPipeの左右は鏡合わせになるため注意
+                // 左手首:16, 左肩:12 | 右手首:15, 右肩:11
+                const leftWristY = results.poseLandmarks[16].y;
+                const leftShoulderY = results.poseLandmarks[12].y;
+                const rightWristY = results.poseLandmarks[15].y;
+                const rightShoulderY = results.poseLandmarks[11].y;
+
+                // 左手の判定
+                let currentLeft = (leftWristY < leftShoulderY) ? "on" : "off";
+                if (currentLeft !== lastLeft) {
+                    sendSignal("pin12", currentLeft);
+                    lastLeft = currentLeft;
+                }
+
+                // 右手の判定
+                let currentRight = (rightWristY < rightShoulderY) ? "on" : "off";
+                if (currentRight !== lastRight) {
+                    sendSignal("pin13", currentRight);
+                    lastRight = currentRight;
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        function startCamera() {
+            const camera = new Camera(videoElement, {
+                onFrame: async () => { await pose.send({image: videoElement}); },
+                width: 640, height: 480
+            });
+            camera.start();
+        }
+    </script>
+</body>
+</html>
