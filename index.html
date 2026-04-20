@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Pose LED Controller</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+</head>
+<body style="font-family: sans-serif; text-align: center;">
+  <h1>ポーズでLED制御</h1>
+  <div style="position: relative; display: inline-block;">
+    <video id="input_video" style="display:none;"></video>
+    <canvas id="output_canvas" width="640px" height="480px" style="border: 1px solid #ccc;"></canvas>
+  </div>
+  <div id="status_panel" style="margin-top: 20px; font-size: 1.2em;">
+    <p>左手LED: <span id="status1" style="font-weight:bold;">OFF</span></p>
+    <p>右手LED: <span id="status2" style="font-weight:bold;">OFF</span></p>
+  </div>
+
+  <script>
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    
+    const esp32Ip = "http://192.168.1.100";
+    let led1State = false;
+    let led2State = false;
+
+    // 通信関数
+    async function sendSignal(target, action) {
+      try {
+        await fetch(`${esp32Ip}/${target}/${action}`, { mode: 'no-cors' });
+        console.log(`${target} ${action} signal sent`);
+      } catch (e) {
+        console.error("通信エラー", e);
+      }
+    }
+
+    function onResults(results) {
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      if (results.poseLandmarks) {
+        // 描画（デバッグ用）
+        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+        drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2});
+
+        const nose = results.poseLandmarks[0];      // 鼻
+        const leftWrist = results.poseLandmarks[15]; // 左手首
+        const rightWrist = results.poseLandmarks[16]; // 右手首
+
+        // Y座標は上が0、下が1。手首のY < 鼻のY で「鼻より高い」判定
+        
+        // 左手の判定
+        if (leftWrist.y < nose.y && !led1State) {
+          led1State = true;
+          document.getElementById('status1').innerText = "ON";
+          sendSignal('led1', 'on');
+        } else if (leftWrist.y > nose.y && led1State) {
+          led1State = false;
+          document.getElementById('status1').innerText = "OFF";
+          sendSignal('led1', 'off');
+        }
+
+        // 右手の判定
+        if (rightWrist.y < nose.y && !led2State) {
+          led2State = true;
+          document.getElementById('status2').innerText = "ON";
+          sendSignal('led2', 'on');
+        } else if (rightWrist.y > nose.y && led2State) {
+          led2State = false;
+          document.getElementById('status2').innerText = "OFF";
+          sendSignal('led2', 'off');
+        }
+      }
+      canvasCtx.restore();
+    }
+
+    const pose = new Pose({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+    });
+    pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+    pose.onResults(onResults);
+
+    const camera = new Camera(videoElement, {
+      onFrame: async () => { await pose.send({image: videoElement}); },
+      width: 640, height: 480
+    });
+    camera.start();
+  </script>
+</body>
+</html>
